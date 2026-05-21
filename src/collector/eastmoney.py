@@ -221,20 +221,12 @@ class EastmoneyCollector(BaseCollector):
     def collect_capital_data(self, stock_code: str):
         logger.info(f"开始采集 {stock_code} 总股本")
         code = stock_code[2:]
-        df = ak.stock_individual_info_em(symbol=code)
-        if df.empty:
-            return
-
-        total_shares = None
-        for _, row in df.iterrows():
-            if '总股本' in str(row.get('item', '')):
-                try:
-                    total_shares = int(float(row.get('value', 0)))
-                    break
-                except:
-                    continue
-
-        if total_shares is None:
+        try:
+            df = ak.stock_profile_cninfo(symbol=code)
+            reg_cap = df['注册资金'].iloc[0]
+            total_shares = int(float(reg_cap) * 10000)
+        except Exception as e:
+            logger.warning(f"{stock_code} 总股本采集失败(CNInfo): {e}")
             return
 
         today = datetime.now().strftime("%Y-%m-%d")
@@ -243,35 +235,31 @@ class EastmoneyCollector(BaseCollector):
         VALUES (?, ?, ?)
         ON CONFLICT (stock_code, record_date) DO UPDATE SET total_shares = EXCLUDED.total_shares
         """, (stock_code, today, total_shares))
-        logger.info(f"{stock_code} 总股本完成")
+        logger.info(f"{stock_code} 总股本完成: {total_shares}")
 
     def collect_industry_data(self, stock_code: str):
         logger.info(f"开始采集 {stock_code} 行业信息")
+        code = stock_code[2:]
         try:
-            code = stock_code[2:]
-            df = ak.stock_individual_info_em(symbol=code)
-            industry_name = None
-            for _, row in df.iterrows():
-                item = str(row.get('item', ''))
-                if '行业' in item or '所属板块' in item:
-                    industry_name = str(row.get('value', ''))
-                    break
-
-            if industry_name is None:
-                logger.info(f"{stock_code} 未找到行业信息")
-                return
-
-            today = datetime.now().strftime("%Y-%m-%d")
-            self.db_ops.conn.execute("""
-            INSERT INTO stock_industry (stock_code, industry_name, industry_level, source, update_date)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (stock_code) DO UPDATE SET
-                industry_name = EXCLUDED.industry_name,
-                update_date = EXCLUDED.update_date
-            """, (stock_code, industry_name, "东财行业", "Eastmoney", today))
-            logger.info(f"{stock_code} 行业信息完成: {industry_name}")
+            df = ak.stock_profile_cninfo(symbol=code)
+            industry_name = df['所属行业'].iloc[0]
         except Exception as e:
-            logger.warning(f"{stock_code} 行业信息采集失败: {e}")
+            logger.warning(f"{stock_code} 行业信息采集失败(CNInfo): {e}")
+            return
+
+        if not industry_name:
+            logger.info(f"{stock_code} 未找到行业信息")
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.db_ops.conn.execute("""
+        INSERT INTO stock_industry (stock_code, industry_name, industry_level, source, update_date)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (stock_code) DO UPDATE SET
+            industry_name = EXCLUDED.industry_name,
+            update_date = EXCLUDED.update_date
+        """, (stock_code, industry_name, "巨潮行业", "CNInfo", today))
+        logger.info(f"{stock_code} 行业信息完成: {industry_name}")
 
     def collect_dividend_data(self, stock_code: str):
         logger.info(f"开始采集 {stock_code} 分红数据")

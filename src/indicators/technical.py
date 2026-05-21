@@ -1,5 +1,6 @@
 
 import pandas as pd
+import numpy as np
 import logging
 from .base import BaseIndicatorCalculator
 
@@ -41,10 +42,10 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
         df['boll_upper'] = df['boll_mid'] + 2 * df['boll_std']
         df['boll_lower'] = df['boll_mid'] - 2 * df['boll_std']
 
-        df['bias5'] = (df['close'] - df['ma5']) / df['ma5'].replace(0, pd.NA) * 100
-        df['bias10'] = (df['close'] - df['ma10']) / df['ma10'].replace(0, pd.NA) * 100
-        df['bias20'] = (df['close'] - df['ma20']) / df['ma20'].replace(0, pd.NA) * 100
-        df['bias60'] = (df['close'] - df['ma60']) / df['ma60'].replace(0, pd.NA) * 100
+        df['bias5'] = (df['close'] - df['ma5']) / df['ma5'].replace(0, np.nan) * 100
+        df['bias10'] = (df['close'] - df['ma10']) / df['ma10'].replace(0, np.nan) * 100
+        df['bias20'] = (df['close'] - df['ma20']) / df['ma20'].replace(0, np.nan) * 100
+        df['bias60'] = (df['close'] - df['ma60']) / df['ma60'].replace(0, np.nan) * 100
 
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).fillna(0)
@@ -53,12 +54,12 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
         for period in [6, 12, 24]:
             avg_gain = gain.rolling(window=period, min_periods=1).mean()
             avg_loss = loss.rolling(window=period, min_periods=1).mean()
-            rs = avg_gain / avg_loss.replace(0, pd.NA)
+            rs = avg_gain / avg_loss.replace(0, np.nan)
             df[f'rsi{period}'] = 100 - (100 / (1 + rs))
 
         low_list = df['low'].rolling(9, min_periods=1).min()
         high_list = df['high'].rolling(9, min_periods=1).max()
-        rsv = (df['close'] - low_list) / (high_list - low_list).replace(0, pd.NA) * 100
+        rsv = (df['close'] - low_list) / (high_list - low_list).replace(0, np.nan) * 100
         rsv = rsv.fillna(50)
         df['kdj_k'] = rsv.ewm(com=2, adjust=False, min_periods=1).mean()
         df['kdj_d'] = df['kdj_k'].ewm(com=2, adjust=False, min_periods=1).mean()
@@ -67,12 +68,12 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
         tp = (df['high'] + df['low'] + df['close']) / 3
         ma_tp = tp.rolling(20, min_periods=1).mean()
         md = tp.rolling(20, min_periods=1).apply(lambda x: (abs(x - x.mean())).mean(), raw=True)
-        df['cci20'] = (tp - ma_tp) / (0.015 * md).replace(0, pd.NA)
+        df['cci20'] = (tp - ma_tp) / (0.015 * md).replace(0, np.nan)
         df['cci20'] = df['cci20'].fillna(0)
 
         low14 = df['low'].rolling(14, min_periods=1).min()
         high14 = df['high'].rolling(14, min_periods=1).max()
-        df['wr14'] = (high14 - df['close']) / (high14 - low14).replace(0, pd.NA) * 100
+        df['wr14'] = (high14 - df['close']) / (high14 - low14).replace(0, np.nan) * 100
         df['wr14'] = df['wr14'].fillna(50)
 
         tr1 = df['high'] - df['low']
@@ -96,7 +97,7 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
         negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0)
         pos_sum = positive_flow.rolling(14, min_periods=1).sum()
         neg_sum = negative_flow.rolling(14, min_periods=1).sum()
-        mfi_ratio = pos_sum / neg_sum.replace(0, pd.NA)
+        mfi_ratio = pos_sum / neg_sum.replace(0, np.nan)
         df['mfi14'] = 100 - (100 / (1 + mfi_ratio))
         df['mfi14'] = df['mfi14'].fillna(50)
 
@@ -106,7 +107,7 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
         up_sum = up_vol.rolling(24, min_periods=1).sum()
         down_sum = down_vol.rolling(24, min_periods=1).sum()
         flat_sum = flat_vol.rolling(24, min_periods=1).sum()
-        df['vr'] = (up_sum + flat_sum / 2) / (down_sum + flat_sum / 2).replace(0, pd.NA) * 100
+        df['vr'] = (up_sum + flat_sum / 2) / (down_sum + flat_sum / 2).replace(0, np.nan) * 100
         df['vr'] = df['vr'].fillna(100)
 
         high = df['high']
@@ -116,9 +117,9 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
         minus_dm = -low.diff().clip(upper=0)
         tr = pd.concat([high - low, abs(high - close.shift(1)), abs(low - close.shift(1))], axis=1).max(axis=1)
         atr = tr.rolling(14, min_periods=1).mean()
-        plus_di = 100 * (plus_dm.rolling(14, min_periods=1).mean() / atr.replace(0, pd.NA))
-        minus_di = 100 * (minus_dm.rolling(14, min_periods=1).mean() / atr.replace(0, pd.NA))
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, pd.NA)
+        plus_di = 100 * (plus_dm.rolling(14, min_periods=1).mean() / atr.replace(0, np.nan))
+        minus_di = 100 * (minus_dm.rolling(14, min_periods=1).mean() / atr.replace(0, np.nan))
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)
         adx = dx.rolling(14, min_periods=1).mean()
         adxr = (adx + adx.shift(14)).rolling(2, min_periods=1).mean()
         df['dmi_pdi'] = plus_di
@@ -159,7 +160,7 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
                             af = min(af + af_step, af_max)
 
         df['sar'] = sar
-        wvad = ((df['close'] - df['open']) / (df['high'] - df['low']).replace(0, pd.NA)) * df['volume']
+        wvad = ((df['close'] - df['open']) / (df['high'] - df['low']).replace(0, np.nan)) * df['volume']
         df['wvad'] = wvad.fillna(0)
 
         self.db_ops.conn.execute("DELETE FROM technical_indicators WHERE stock_code = ?", (stock_code,))
