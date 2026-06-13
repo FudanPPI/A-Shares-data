@@ -6,7 +6,7 @@ from src.database.models import init_tables
 from src.database.operations import DatabaseOperations
 from src.database.parquet_store import ParquetStore
 from src.database.backup import BackupManager
-from src.collector.eastmoney import EastmoneyCollector
+from src.collector.multi_source_collector import MultiSourceCollector
 from src.indicators.technical import TechnicalIndicatorCalculator
 from src.indicators.financial import FinancialIndicatorCalculator
 from src.indicators.valuation import ValuationIndicatorCalculator
@@ -19,7 +19,7 @@ class Scheduler:
         self.db_ops = DatabaseOperations(DB_PATH)
         self.parquet_store = ParquetStore(PARQUET_DIR)
         self.backup_manager = BackupManager(DB_PATH, BACKUP_DIR)
-        self.collector = EastmoneyCollector(self.db_ops, self.parquet_store, START_DATE)
+        self.collector = MultiSourceCollector(self.db_ops, self.parquet_store, START_DATE)
         self.tech_calc = TechnicalIndicatorCalculator(self.db_ops)
         self.fin_calc = FinancialIndicatorCalculator(self.db_ops)
         self.val_calc = ValuationIndicatorCalculator(self.db_ops)

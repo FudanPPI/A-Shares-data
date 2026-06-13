@@ -443,3 +443,33 @@ def get_industry(stock_code: str):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "db_path": str(DB_PATH)}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import socket
+
+    DEFAULT_PORT = 8001
+    FALLBACK_PORTS = [8002, 8003, 8004, 8005]
+
+    def _port_available(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("0.0.0.0", port))
+                return True
+            except OSError:
+                return False
+
+    port = DEFAULT_PORT
+    if not _port_available(port):
+        for p in FALLBACK_PORTS:
+            if _port_available(p):
+                port = p
+                break
+        else:
+            print(f"错误: 端口 {DEFAULT_PORT}-{FALLBACK_PORTS[-1]} 均被占用")
+            exit(1)
+
+    print(f"启动 API 服务: http://localhost:{port}")
+    print(f"Swagger 文档: http://localhost:{port}/docs")
+    uvicorn.run(app, host="0.0.0.0", port=port)

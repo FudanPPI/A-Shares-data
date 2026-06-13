@@ -1,6 +1,6 @@
 # 股票数据采集与分析系统
 
-基于 akshare + DuckDB 的股票数据采集、存储和分析系统。
+基于多数据源（mootdx + BaoStock + AKShare + 腾讯财经）+ DuckDB 的股票数据采集、存储和分析系统。
 
 ## 数据配置
 本项目只采集了部分股票相关数据，可以根据需要配置不同股票列表获取数据，配置方式在 `src/config.py` 中的 `STOCK_CODES` 列表。
@@ -8,6 +8,7 @@
 ## 功能特点
 
 ### 数据采集
+- **多数据源冗余**：4个数据源主备切换，确保采集成功率
 - **日线行情**：开盘价、收盘价、最高价、最低价、成交量、成交额、复权因子
 - **财务报表**：利润表、资产负债表、现金流量表（含扣非归母净利润、利息支出等详细指标）
 - **公告数据**：历史公告列表
@@ -16,6 +17,13 @@
 - **北向资金**：北向资金流入流出
 - **融资融券**：融资融券余额
 - **龙虎榜**：龙虎榜上榜记录及详细交易数据
+
+### 数据治理
+- **数据字典**：`src/metadata/data_dictionary.py` 集中维护 15 张表、247 个字段的权威定义（含数据来源、计算公式、单位）
+- **数据血缘**：每个字段明确标注来源（mootdx/baostock/tencent/akshare/calculated），可追溯至采集器
+- **增量更新**：`update_log` 表驱动增量采集，避免重复拉取全量数据
+- **备份与校验**：每次运行后自动备份 DuckDB 文件，校验 15 张表数据完整性
+- **Parquet 双存储**：DuckDB + Parquet 双副本，防止数据库损坏
 
 ### 指标计算
 - **盈利能力**：ROE（净资产收益率）、ROA（总资产收益率）、毛利率、净利率（归母/扣非）
@@ -32,16 +40,32 @@
 ## 项目结构
 
 ```
-Stockdata/
+A-Shares-data/
 ├── src/                    # 核心代码
-│   ├── config.py           # 配置文件
+│   ├── config.py           # 配置文件(股票列表/数据源/路径)
 │   ├── main.py             # 采集主入口
-│   ├── scheduler.py        # 流程调度
+│   ├── scheduler.py        # 流程调度(采集→计算→备份)
 │   ├── collector/          # 数据采集模块
+│   │   ├── base.py             # 基类(重试/回退/安全转换)
+│   │   ├── multi_source_collector.py  # 多源编排器
+│   │   ├── mootdx_collector.py    # 通达信TCP(日线行情)
+│   │   ├── baostock_collector.py  # BaoStock(股本/行业/分红)
+│   │   ├── tencent_collector.py   # 腾讯财经(PE/PB估值)
+│   │   └── eastmoney.py           # 东方财富(财务/融资/龙虎榜)
 │   ├── database/           # 数据库操作
-│   └── indicators/         # 指标计算
+│   │   ├── models.py            # DDL建表
+│   │   ├── operations.py        # 增删改查
+│   │   ├── parquet_store.py     # Parquet双存储
+│   │   └── backup.py            # 备份与完整性校验
+│   ├── indicators/         # 指标计算
+│   │   ├── base.py              # 基类
+│   │   ├── technical.py         # 技术指标(30+个)
+│   │   ├── financial.py         # 财务指标(80+个)
+│   │   └── valuation.py         # 估值指标(PE/PB/PS/股息率)
+│   └── metadata/           # 数据字典
+│       └── data_dictionary.py   # 所有表和字段的权威定义
 ├── api/                    # REST API 服务
-│   └── main.py             # FastAPI 应用
+│   └── main.py             # FastAPI 应用(15+接口)
 ├── data/                   # 数据存储
 │   ├── stock_data.duckdb       # DuckDB数据库
 │   ├── parquet/               # Parquet持久化
@@ -50,6 +74,7 @@ Stockdata/
 ├── logs/                   # 日志
 │   └── stock_collector.log      # 运行日志
 ├── scripts/                # 脚本
+│   └── run_update.py           # 一键更新脚本
 └── tests/                  # 测试
 ```
 
@@ -59,7 +84,7 @@ Stockdata/
 ```bash
 pip install -r requirements.txt
 # 或单独安装
-pip install akshare duckdb pandas fastapi uvicorn
+pip install akshare mootdx baostock duckdb pandas fastapi uvicorn requests
 ```
 
 ### 配置股票列表
@@ -81,9 +106,9 @@ python -m src.main
 
 ### 启动 REST API 服务
 ```bash
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+python -m api.main
 ```
-访问 http://localhost:8000/docs 查看 Swagger 文档。
+服务会自动检测可用端口（默认 8001），启动后访问 http://localhost:8001/docs 查看 Swagger 文档。
 
 ---
 
@@ -91,12 +116,15 @@ python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 
 ### 服务启动
 ```bash
-# 启动API服务
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+# 启动API服务（默认端口 8001，自动检测可用端口）
+python -m api.main
+
+# 或手动指定端口
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8001
 
 # 访问文档
-http://localhost:8000/docs  # Swagger UI
-http://localhost:8000/redoc # Redoc
+http://localhost:8001/docs  # Swagger UI
+http://localhost:8001/redoc # Redoc
 ```
 
 ### 公共接口
@@ -350,7 +378,7 @@ GET /api/capital/{stock_code}
 import requests
 import json
 
-base_url = "http://127.0.0.1:8000"
+base_url = "http://127.0.0.1:8001"
 
 # 1. 获取股票列表
 print("=== 股票列表 ===")
@@ -421,25 +449,57 @@ resp = requests.get(
 
 ## 数据库表结构
 
-| 表名 | 说明 |
-|------|------|
-| stock_daily | 股票日线行情数据 |
-| financial_statements | 财务报表原始数据 |
-| financial_intermediate | 财务指标计算结果 |
-| technical_indicators | 技术指标 |
-| valuation_indicators | 估值指标 |
-| announcements | 公告数据 |
-| dividends | 分红数据 |
-| stock_capital | 股本数据 |
-| northbound_flow | 北向资金 |
-| margin_trading | 融资融券 |
-| dragon_tiger | 龙虎榜 |
-| dragon_tiger_detail | 龙虎榜详细 |
-| stock_industry | 股票行业信息 |
-| column_metadata | 元数据 |
-| update_log | 更新记录 |
+> 详细的字段定义、数据来源、计算公式请参考 [数据字典](src/metadata/data_dictionary.py)。`ALL_TABLES` 变量包含全部 15 张表、247 个字段的完整定义。
+
+| 表名 | 说明 | 主键 | 字段数 |
+|------|------|------|--------|
+| stock_daily | 股票日线行情数据 | stock_code, trade_date | 21 |
+| financial_statements | 财务报表原始数据 | stock_code, report_date, report_type | 19 |
+| financial_intermediate | 财务指标计算结果 | stock_code, report_date, report_type | 89 |
+| technical_indicators | 技术指标(30+个) | stock_code, trade_date | 39 |
+| valuation_indicators | 估值指标 | stock_code, trade_date | 13 |
+| announcements | 公告数据 | stock_code, announcement_date, title | 6 |
+| dividends | 分红数据 | stock_code, dividend_date | 4 |
+| stock_capital | 股本数据 | stock_code, record_date | 3 |
+| northbound_flow | 北向资金 | stock_code, trade_date | 9 |
+| margin_trading | 融资融券 | stock_code, trade_date | 11 |
+| dragon_tiger | 龙虎榜 | stock_code, trade_date, list_type | 11 |
+| dragon_tiger_detail | 龙虎榜明细 | id | 8 |
+| stock_industry | 股票行业信息 | stock_code | 5 |
+| column_metadata | 字段元数据 | table_name, column_name | 4 |
+| update_log | 更新记录 | stock_code, data_type | 5 |
+
+### 数据来源分工
+
+| 数据源 | 说明 | 采集的数据 |
+|--------|------|-----------|
+| mootdx | TCP直连通达信(零鉴权) | 日线行情(OHLCV) |
+| BaoStock | 免费证券数据 | 股本、行业分类、分红 |
+| 腾讯财经 | 零鉴权HTTP接口 | PE(TTM)/PB/总市值/换手率 |
+| AKShare(Sina) | 新浪三大报表 | 利润表、资产负债表、现金流量表 |
+| AKShare(东方财富) | 东方财富EM | 补充字段(扣非净利润、利息支出) |
+| AKShare | 独有API | 融资融券、公告、龙虎榜 |
 
 ## 使用示例
+
+### 使用数据字典
+```python
+from src.metadata.data_dictionary import ALL_TABLES, TABLE_MAP, SOURCE_INDEX
+
+# 查看某张表的所有字段
+daily = TABLE_MAP["stock_daily"]
+for f in daily.fields:
+    print(f"{f.column_name}: {f.display_name} ({f.unit}) - {f.source.value}")
+
+# 按数据来源查看所有字段
+for table, col, name in SOURCE_INDEX[DataSource.MOOTDX]:
+    print(f"  {table}.{col} = {name}")
+
+# 查看所有派生计算字段及公式
+from src.metadata.data_dictionary import DERIVED_FIELDS
+for table, col, name, formula in DERIVED_FIELDS[:5]:
+    print(f"  {table}.{col}: {name} => {formula}")
+```
 
 ### 查询财务数据
 ```python
@@ -469,12 +529,15 @@ df = conn.execute("""
 ```
 
 ## 依赖
-- akshare：金融数据采集
+- mootdx：通达信行情数据（TCP直连，稳定可靠）
+- baostock：股本/行业/分红数据
+- akshare：财务数据、融资融券、公告、龙虎榜
+- 腾讯财经：估值指标 PE/PB
 - duckdb：列式数据库
 - pandas：数据处理
 - fastapi：REST API 框架
 - uvicorn：ASGI 服务器
-- logging：日志
+- requests：HTTP 请求
 
 ## 许可证
 本项目仅供学习研究使用。
