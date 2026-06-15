@@ -8,6 +8,11 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.metadata.data_dictionary import ALL_TABLES
+
 BASE_DIR = Path(__file__).parent.parent
 DB_PATH = BASE_DIR / "data" / "stock_data.duckdb"
 
@@ -443,6 +448,177 @@ def get_industry(stock_code: str):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "db_path": str(DB_PATH)}
+
+
+# ==================== 主数据接口 ====================
+
+@app.get("/api/master")
+def get_stock_master():
+    """获取所有股票的主数据"""
+    conn = _get_conn()
+    try:
+        result = conn.execute("SELECT * FROM stock_master ORDER BY stock_code")
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+        return {"count": len(rows), "data": _rows_to_dicts(rows, columns)}
+    except Exception:
+        raise HTTPException(status_code=500, detail="stock_master 表不存在,请先运行初始化脚本")
+    finally:
+        conn.close()
+
+
+@app.get("/api/master/{stock_code}")
+def get_stock_detail(stock_code: str):
+    """获取单只股票的主数据及关联统计"""
+    conn = _get_conn()
+    try:
+        master = conn.execute(
+            "SELECT * FROM stock_master WHERE stock_code = ?", (stock_code,)
+        ).fetchone()
+        if not master:
+            raise HTTPException(status_code=404, detail=f"股票 '{stock_code}' 未找到")
+
+        desc = conn.execute("SELECT * FROM stock_master LIMIT 0").description
+        columns = [d[0] for d in desc]
+        result = dict(zip(columns, [
+            str(v) if v is not None else None for v in master
+        ]))
+
+        # 关联统计
+        stats = conn.execute("""
+            SELECT
+                (SELECT MAX(trade_date) FROM stock_daily WHERE stock_code = ?) AS latest_daily,
+                (SELECT COUNT(*) FROM stock_daily WHERE stock_code = ?) AS daily_count,
+                (SELECT MAX(report_date) FROM financial_statements WHERE stock_code = ?) AS latest_financial,
+                (SELECT COUNT(*) FROM announcements WHERE stock_code = ?) AS announcement_count
+        """, (stock_code,) * 4).fetchone()
+
+        result["latest_daily"] = str(stats[0]) if stats[0] else None
+        result["daily_count"] = stats[1]
+        result["latest_financial"] = str(stats[2]) if stats[2] else None
+        result["announcement_count"] = stats[3]
+
+        return result
+    finally:
+        conn.close()
+
+
+# ==================== 元数据接口 ====================
+
+@app.get("/api/metadata/tables")
+def get_metadata_tables():
+    """返回所有数据表的元数据定义(字段名、含义、来源、计算公式等)"""
+    result = []
+    for table in ALL_TABLES:
+        fields = []
+        for f in table.fields:
+            fields.append({
+                "column_name": f.column_name,
+                "display_name": f.display_name,
+                "description": f.description,
+                "data_type": f.data_type,
+                "nullable": f.nullable,
+                "source": f.source.value,
+                "category": f.category.value,
+                "calculation": f.calculation,
+                "unit": f.unit,
+                "example": f.example,
+            })
+
+        result.append({
+            "table_name": table.table_name,
+            "display_name": table.display_name,
+            "description": table.description,
+            "primary_key": table.primary_key,
+            "refresh_frequency": table.refresh_frequency,
+            "field_count": len(fields),
+            "fields": fields,
+        })
+
+    return {"count": len(result), "tables": result}
+
+
+@app.get("/api/metadata/tables/{table_name}")
+def get_metadata_table(table_name: str):
+    """返回指定数据表的元数据定义"""
+    for table in ALL_TABLES:
+        if table.table_name.lower() == table_name.lower():
+            fields = []
+            for f in table.fields:
+                fields.append({
+                    "column_name": f.column_name,
+                    "display_name": f.display_name,
+                    "description": f.description,
+                    "data_type": f.data_type,
+                    "nullable": f.nullable,
+                    "source": f.source.value,
+                    "category": f.category.value,
+                    "calculation": f.calculation,
+                    "unit": f.unit,
+                    "example": f.example,
+                })
+
+            return {
+                "table_name": table.table_name,
+                "display_name": table.display_name,
+                "description": table.description,
+                "primary_key": table.primary_key,
+                "refresh_frequency": table.refresh_frequency,
+                "field_count": len(fields),
+                "fields": fields,
+            }
+
+    raise HTTPException(status_code=404, detail=f"表 '{table_name}' 未找到")
+
+
+@app.get("/api/metadata/search")
+def search_metadata(q: str = Query(..., description="搜索关键词,匹配表名/字段名/字段描述/计算公式")):
+    """搜索元数据。例如: ?q=PE → 返回所有包含PE的字段定义"""
+    q_lower = q.lower()
+    results = []
+
+    for table in ALL_TABLES:
+        matched_fields = []
+        for f in table.fields:
+            if (q_lower in f.column_name.lower()
+                or q_lower in f.display_name
+                or q_lower in f.description
+                or (f.calculation and q_lower in f.calculation)):
+                matched_fields.append({
+                    "column_name": f.column_name,
+                    "display_name": f.display_name,
+                    "description": f.description,
+                    "table_name": table.table_name,
+                    "source": f.source.value,
+                    "calculation": f.calculation,
+                })
+        if matched_fields:
+            results.append({
+                "table_name": table.table_name,
+                "display_name": table.display_name,
+                "matched_fields": matched_fields,
+            })
+
+    total_hits = sum(len(r["matched_fields"]) for r in results)
+    return {"query": q, "match_count": total_hits, "results": results}
+
+
+# ==================== 质量检查接口 ====================
+
+@app.get("/api/quality")
+def run_quality_check():
+    """执行全部质量规则检查,返回评分和违规明细"""
+    from src.quality import QualityChecker
+    checker = QualityChecker(str(DB_PATH))
+    return checker.run_all()
+
+
+@app.get("/api/quality/history")
+def get_quality_history(limit: int = Query(30, ge=1, le=100)):
+    """获取历史质量检查报告摘要"""
+    from src.quality import QualityChecker
+    checker = QualityChecker(str(DB_PATH))
+    return {"history": checker.get_report_history(limit)}
 
 
 if __name__ == "__main__":

@@ -347,4 +347,21 @@ def init_tables(conn):
     )
     """)
 
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS stock_master (
+        stock_code VARCHAR(10) PRIMARY KEY,
+        stock_name VARCHAR(50) NOT NULL,
+        stock_name_cn VARCHAR(100),
+        market VARCHAR(10),
+        board VARCHAR(20),
+        listing_date DATE,
+        delisting_date DATE,
+        status VARCHAR(10) DEFAULT '正常',
+        is_etf BOOLEAN DEFAULT FALSE,
+        is_index BOOLEAN DEFAULT FALSE,
+        added_date DATE DEFAULT CURRENT_DATE,
+        notes VARCHAR(255)
+    )
+    """)
+
     logger.info("数据库表结构初始化完成")
