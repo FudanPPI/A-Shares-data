@@ -98,24 +98,28 @@ class TencentCollector(BaseCollector):
         turnover = data.get('turnover')
 
         if pe_ttm or pb:
-            self.db_ops.conn.execute("""
-            INSERT INTO valuation_indicators (stock_code, trade_date, pe_ttm, pb)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (stock_code, trade_date) DO UPDATE SET
-                pe_ttm = COALESCE(EXCLUDED.pe_ttm, valuation_indicators.pe_ttm),
-                pb = COALESCE(EXCLUDED.pb, valuation_indicators.pb)
-            """, (stock_code, today, pe_ttm, pb))
+            # 事务保证估值数据写入原子化
+            with self.db_ops.transaction():
+                self.db_ops.conn.execute("""
+                INSERT INTO valuation_indicators (stock_code, trade_date, pe_ttm, pb)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (stock_code, trade_date) DO UPDATE SET
+                    pe_ttm = COALESCE(EXCLUDED.pe_ttm, valuation_indicators.pe_ttm),
+                    pb = COALESCE(EXCLUDED.pb, valuation_indicators.pb)
+                """, (stock_code, today, pe_ttm, pb))
             logger.info(f"[tencent] {stock_code} 估值: PE(TTM)={pe_ttm}, PB={pb}")
 
         # 更新股本数据(如果BaoStock没取到)
         total_shares = data.get('total_shares')
         if total_shares:
             total_shares_int = int(total_shares * 10000)  # 腾讯返回的是万股
-            self.db_ops.conn.execute("""
-            INSERT INTO stock_capital (stock_code, record_date, total_shares)
-            VALUES (?, ?, ?)
-            ON CONFLICT (stock_code, record_date) DO UPDATE SET total_shares = EXCLUDED.total_shares
-            """, (stock_code, today, total_shares_int))
+            # 事务保证股本数据写入原子化
+            with self.db_ops.transaction():
+                self.db_ops.conn.execute("""
+                INSERT INTO stock_capital (stock_code, record_date, total_shares)
+                VALUES (?, ?, ?)
+                ON CONFLICT (stock_code, record_date) DO UPDATE SET total_shares = EXCLUDED.total_shares
+                """, (stock_code, today, total_shares_int))
 
         return data
 

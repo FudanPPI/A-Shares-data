@@ -163,8 +163,6 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
         wvad = ((df['close'] - df['open']) / (df['high'] - df['low']).replace(0, np.nan)) * df['volume']
         df['wvad'] = wvad.fillna(0)
 
-        self.db_ops.conn.execute("DELETE FROM technical_indicators WHERE stock_code = ?", (stock_code,))
-
         tech_cols = [
             'stock_code', 'trade_date', 'ma5', 'ma10', 'ma20', 'ma60',
             'ema12', 'ema26', 'boll_mid', 'boll_upper', 'boll_lower',
@@ -178,6 +176,11 @@ class TechnicalIndicatorCalculator(BaseIndicatorCalculator):
             'sar', 'wvad'
         ]
         existing_cols = [c for c in tech_cols if c in df.columns]
-        self.db_ops.insert_dataframe("technical_indicators", df[existing_cols])
+
+        # 事务保证: DELETE + INSERT 原子化
+        # 若无事务,DELETE 成功后 INSERT 失败会导致该股票所有技术指标丢失
+        with self.db_ops.transaction():
+            self.db_ops.conn.execute("DELETE FROM technical_indicators WHERE stock_code = ?", (stock_code,))
+            self.db_ops.insert_dataframe("technical_indicators", df[existing_cols])
 
         logger.info(f"{stock_code} 技术指标完成")

@@ -55,34 +55,37 @@ class EastmoneyCollector(BaseCollector):
             df = ak.stock_profit_sheet_by_report_em(symbol=em_code)
             df['report_date'] = pd.to_datetime(df['REPORT_DATE']).dt.date
 
-            for _, row in df.iterrows():
-                rd = row['report_date']
+            # 事务保证: 所有补充字段的批量 UPDATE 原子化
+            # 避免中途失败导致部分字段已更新、部分未更新
+            with self.db_ops.transaction():
+                for _, row in df.iterrows():
+                    rd = row['report_date']
 
-                deducted = row.get('DEDUCT_PARENT_NETPROFIT')
-                if pd.notna(deducted):
-                    self.db_ops.conn.execute("""
-                        UPDATE financial_statements 
-                        SET net_profit_deducted = ? 
-                        WHERE stock_code = ? AND report_date = ?
-                    """, [float(deducted), stock_code, rd])
-
-                existing = self.db_ops.conn.execute("""
-                    SELECT interest_expense FROM financial_statements 
-                    WHERE stock_code = ? AND report_date = ?
-                """, [stock_code, rd]).fetchone()
-
-                if existing is None or existing[0] is None:
-                    interest = row.get('INTEREST_EXPENSE')
-                    if pd.isna(interest):
-                        interest = row.get('FE_INTEREST_EXPENSE')
-                    if pd.isna(interest):
-                        interest = row.get('FINANCE_EXPENSE')
-                    if pd.notna(interest):
+                    deducted = row.get('DEDUCT_PARENT_NETPROFIT')
+                    if pd.notna(deducted):
                         self.db_ops.conn.execute("""
                             UPDATE financial_statements 
-                            SET interest_expense = ? 
+                            SET net_profit_deducted = ? 
                             WHERE stock_code = ? AND report_date = ?
-                        """, [float(interest), stock_code, rd])
+                        """, [float(deducted), stock_code, rd])
+
+                    existing = self.db_ops.conn.execute("""
+                        SELECT interest_expense FROM financial_statements 
+                        WHERE stock_code = ? AND report_date = ?
+                    """, [stock_code, rd]).fetchone()
+
+                    if existing is None or existing[0] is None:
+                        interest = row.get('INTEREST_EXPENSE')
+                        if pd.isna(interest):
+                            interest = row.get('FE_INTEREST_EXPENSE')
+                        if pd.isna(interest):
+                            interest = row.get('FINANCE_EXPENSE')
+                        if pd.notna(interest):
+                            self.db_ops.conn.execute("""
+                                UPDATE financial_statements 
+                                SET interest_expense = ? 
+                                WHERE stock_code = ? AND report_date = ?
+                            """, [float(interest), stock_code, rd])
         except Exception as e:
             logger.warning(f"[akshare] {stock_code} 东方财富补充采集失败：{e}")
 
@@ -180,10 +183,16 @@ class EastmoneyCollector(BaseCollector):
         df["report_date"] = pd.to_datetime(df["report_date"]).dt.date
         df["announcement_date"] = pd.to_datetime(df["announcement_date"], errors="coerce").dt.date
 
-        self._upsert_financial(df)
-        self.parquet_store.write_financial(df)
-        self.db_ops.update_last_update_date(stock_code, "financial", today_fmt)
-        logger.info(f"[akshare] {stock_code} 财务数据完成，新增 {len(df)} 条")
+        # 事务保证: 财务数据写入 + Parquet + 水位更新 原子化
+        try:
+            with self.db_ops.transaction():
+                self._upsert_financial(df)
+                self.db_ops.update_last_update_date(stock_code, "financial", today_fmt)
+            self.parquet_store.write_financial(df)
+            logger.info(f"[akshare] {stock_code} 财务数据完成，新增 {len(df)} 条")
+        except Exception as e:
+            logger.error(f"[akshare] {stock_code} 财务数据写入失败,已回滚: {e}")
+            raise
 
     def _upsert_financial(self, df):
         conn = self.db_ops.conn
@@ -272,11 +281,16 @@ class EastmoneyCollector(BaseCollector):
             df['total_change'] = df.get('rz_change', 0) + df.get('rq_change', 0)
             df['total_change_pct'] = df['total_change'] / df['total_balance'].shift(1) * 100
 
-            self.db_ops.insert_dataframe("margin_trading", df, ["stock_code", "trade_date"])
-
             today_fmt = datetime.now().strftime("%Y-%m-%d")
-            self.db_ops.update_last_update_date(stock_code, "margin", today_fmt)
-            logger.info(f"[akshare] {stock_code} 融资融券完成，新增 {len(df)} 条")
+            # 事务保证: 融资融券数据写入 + 水位更新 原子化
+            try:
+                with self.db_ops.transaction():
+                    self.db_ops.insert_dataframe("margin_trading", df, ["stock_code", "trade_date"])
+                    self.db_ops.update_last_update_date(stock_code, "margin", today_fmt)
+                logger.info(f"[akshare] {stock_code} 融资融券完成，新增 {len(df)} 条")
+            except Exception as e:
+                logger.error(f"[akshare] {stock_code} 融资融券写入失败,已回滚: {e}")
+                raise
 
         except Exception as e:
             logger.error(f"[akshare] {stock_code} 融资融券采集失败：{str(e)}")
@@ -315,11 +329,16 @@ class EastmoneyCollector(BaseCollector):
             df["stock_code"] = stock_code
             df["announcement_date"] = pd.to_datetime(df["announcement_date"]).dt.date
 
-            self.db_ops.insert_dataframe("announcements", df, ["stock_code", "announcement_date", "title"])
-
             today_fmt = datetime.now().strftime("%Y-%m-%d")
-            self.db_ops.update_last_update_date(stock_code, "announcement", today_fmt)
-            logger.info(f"[akshare] {stock_code} 公告数据完成，新增 {len(df)} 条")
+            # 事务保证: 公告数据写入 + 水位更新 原子化
+            try:
+                with self.db_ops.transaction():
+                    self.db_ops.insert_dataframe("announcements", df, ["stock_code", "announcement_date", "title"])
+                    self.db_ops.update_last_update_date(stock_code, "announcement", today_fmt)
+                logger.info(f"[akshare] {stock_code} 公告数据完成，新增 {len(df)} 条")
+            except Exception as e:
+                logger.error(f"[akshare] {stock_code} 公告数据写入失败,已回滚: {e}")
+                raise
 
         except Exception as e:
             logger.error(f"[akshare] {stock_code} 公告数据采集失败：{str(e)}")
@@ -339,30 +358,35 @@ class EastmoneyCollector(BaseCollector):
                     df_lhb = df_lhb[df_lhb['代码'].astype(str) == code]
 
                     if not df_lhb.empty:
-                        for _, row in df_lhb.iterrows():
-                            try:
-                                self.db_ops.conn.execute("""
-                                INSERT INTO dragon_tiger 
-                                (stock_code, trade_date, list_type, reason, buy_amount, sell_amount, net_amount)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ON CONFLICT (stock_code, trade_date, list_type) DO UPDATE SET
-                                    reason = EXCLUDED.reason,
-                                    buy_amount = EXCLUDED.buy_amount,
-                                    sell_amount = EXCLUDED.sell_amount,
-                                    net_amount = EXCLUDED.net_amount
-                                """, (
-                                    stock_code,
-                                    pd.to_datetime(row['上榜日']).date(),
-                                    '上榜',
-                                    row.get('上榜原因'),
-                                    self._safe_get(row, '龙虎榜买入额'),
-                                    self._safe_get(row, '龙虎榜卖出额'),
-                                    self._safe_get(row, '龙虎榜净买额')
-                                ))
-                            except Exception as e:
-                                logger.error(f"{stock_code} 龙虎榜单条插入失败：{str(e)}")
-
-                        logger.info(f"[akshare] {stock_code} 龙虎榜数据完成")
+                        # 事务保证: 龙虎榜批量写入原子化,避免部分成功部分失败
+                        try:
+                            with self.db_ops.transaction():
+                                for _, row in df_lhb.iterrows():
+                                    try:
+                                        self.db_ops.conn.execute("""
+                                        INSERT INTO dragon_tiger 
+                                        (stock_code, trade_date, list_type, reason, buy_amount, sell_amount, net_amount)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        ON CONFLICT (stock_code, trade_date, list_type) DO UPDATE SET
+                                            reason = EXCLUDED.reason,
+                                            buy_amount = EXCLUDED.buy_amount,
+                                            sell_amount = EXCLUDED.sell_amount,
+                                            net_amount = EXCLUDED.net_amount
+                                        """, (
+                                            stock_code,
+                                            pd.to_datetime(row['上榜日']).date(),
+                                            '上榜',
+                                            row.get('上榜原因'),
+                                            self._safe_get(row, '龙虎榜买入额'),
+                                            self._safe_get(row, '龙虎榜卖出额'),
+                                            self._safe_get(row, '龙虎榜净买额')
+                                        ))
+                                    except Exception as e:
+                                        logger.error(f"{stock_code} 龙虎榜单条插入失败：{str(e)}")
+                                        raise  # 触发外层事务回滚
+                            logger.info(f"[akshare] {stock_code} 龙虎榜数据完成")
+                        except Exception as e:
+                            logger.error(f"[akshare] {stock_code} 龙虎榜事务回滚: {e}")
             except Exception as e:
                 logger.debug(f"获取龙虎榜详细数据失败：{str(e)}")
 
@@ -403,12 +427,14 @@ class EastmoneyCollector(BaseCollector):
             ("financial_statements", "total_liabilities", "总负债", "元"),
         ]
 
-        for table_name, column_name, description, unit in metadata:
-            try:
-                conn.execute("""
-                INSERT OR REPLACE INTO column_metadata 
-                (table_name, column_name, description, unit)
-                VALUES (?, ?, ?, ?)
-                """, (table_name, column_name, description, unit))
-            except Exception as e:
-                logger.debug(f"元数据插入跳过: {e}")
+        # 事务保证: 元数据批量写入原子化
+        with self.db_ops.transaction():
+            for table_name, column_name, description, unit in metadata:
+                try:
+                    conn.execute("""
+                    INSERT OR REPLACE INTO column_metadata 
+                    (table_name, column_name, description, unit)
+                    VALUES (?, ?, ?, ?)
+                    """, (table_name, column_name, description, unit))
+                except Exception as e:
+                    logger.debug(f"元数据插入跳过: {e}")

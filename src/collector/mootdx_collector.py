@@ -2,19 +2,27 @@
 
 优势: 零鉴权、不封IP、TCP二进制协议稳定
 数据: 日线K线、实时行情
+
+线程安全:
+  - mootdx Quotes client 非线程安全,通过 threading.local 保证每线程独立实例
+  - 写入通过 DatabaseOperations 的事务管理保证原子性
 """
 import pandas as pd
 import logging
+import threading
 from datetime import datetime, timedelta
 from .base import BaseCollector, retry
 
 logger = logging.getLogger(__name__)
 
+# 模块级 threading.local: 每线程独立的 mootdx client
+_client_local = threading.local()
+
 
 class MootdxCollector(BaseCollector):
     def __init__(self, db_ops, parquet_store, start_date: str):
         super().__init__(db_ops, parquet_store, start_date)
-        self._client = None
+        # 不再持有单例 _client,改用 threading.local
 
     # 通达信常用标准服务器
     DEFAULT_SERVERS = [
@@ -24,38 +32,43 @@ class MootdxCollector(BaseCollector):
     ]
 
     def _get_client(self):
-        if self._client is None:
+        """获取当前线程的 mootdx client(threading.local 保证线程独立)"""
+        client = getattr(_client_local, "client", None)
+        if client is None:
             from mootdx.quotes import Quotes
             try:
                 # bestip=False避免写入config.json导致权限问题
-                self._client = Quotes.factory(market='std', timeout=15, bestip=False)
+                client = Quotes.factory(market='std', timeout=15, bestip=False)
                 # 测试连接
-                test = self._client.bars(symbol='000001', frequency=4, start=0, offset=1)
+                test = client.bars(symbol='000001', frequency=4, start=0, offset=1)
                 if test is None or test.empty:
                     raise ConnectionError("默认服务器连接失败")
             except Exception:
                 # 逐个尝试预设服务器
                 for host, port in self.DEFAULT_SERVERS:
                     try:
-                        self._client = Quotes.factory(market='std', timeout=15,
-                                                      bestip=False, ip=host, port=port)
-                        test = self._client.bars(symbol='000001', frequency=4, start=0, offset=1)
+                        client = Quotes.factory(market='std', timeout=15,
+                                                bestip=False, ip=host, port=port)
+                        test = client.bars(symbol='000001', frequency=4, start=0, offset=1)
                         if test is not None and not test.empty:
-                            logger.info(f"[mootdx] 连接服务器成功: {host}:{port}")
+                            logger.info(f"[mootdx] 线程 {threading.get_ident()} 连接服务器成功: {host}:{port}")
                             break
                     except Exception:
                         continue
                 else:
                     logger.warning("[mootdx] 所有服务器连接失败, 将回退到AKShare")
-        return self._client
+            _client_local.client = client
+        return client
 
     def close(self):
-        if self._client:
+        """关闭当前线程的 mootdx client"""
+        client = getattr(_client_local, "client", None)
+        if client:
             try:
-                self._client.close()
+                client.close()
             except Exception:
                 pass
-            self._client = None
+            _client_local.client = None
 
     def collect_stock(self, stock_code: str):
         steps = [
@@ -120,13 +133,19 @@ class MootdxCollector(BaseCollector):
         # 去重
         df = df.loc[:, ~df.columns.duplicated(keep='last')]
 
-        self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
-        self.parquet_store.write_daily(df)
-
         today_fmt = datetime.now().strftime("%Y-%m-%d")
-        self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
-        logger.info(f"[mootdx] {stock_code} 日线数据完成，新增 {len(df)} 条")
-        return True
+        # 事务保证: 数据写入 + 水位更新 原子化
+        # Parquet 写入非事务性,但已有去重逻辑兜底,失败重跑会覆盖
+        try:
+            with self.db_ops.transaction():
+                self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
+                self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
+            self.parquet_store.write_daily(df)
+            logger.info(f"[mootdx] {stock_code} 日线数据完成，新增 {len(df)} 条")
+            return True
+        except Exception as e:
+            logger.error(f"[mootdx] {stock_code} 日线写入失败,已回滚: {e}")
+            raise
 
     def _fallback_akshare(self, stock_code: str):
         """AKShare回退方案"""
@@ -169,13 +188,18 @@ class MootdxCollector(BaseCollector):
             df["stock_code"] = stock_code
             df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
 
-            self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
-            self.parquet_store.write_daily(df)
-
             today_fmt = datetime.now().strftime("%Y-%m-%d")
-            self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
-            logger.info(f"[AKShare回退] {stock_code} 日线数据完成，新增 {len(df)} 条")
-            return True
+            # 事务保证: 数据写入 + 水位更新 原子化
+            try:
+                with self.db_ops.transaction():
+                    self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
+                    self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
+                self.parquet_store.write_daily(df)
+                logger.info(f"[AKShare回退] {stock_code} 日线数据完成，新增 {len(df)} 条")
+                return True
+            except Exception as e:
+                logger.error(f"[AKShare回退] {stock_code} 日线写入失败,已回滚: {e}")
+                return False
         except Exception as e:
             logger.error(f"[AKShare回退] {stock_code} 日线数据也失败: {e}")
             return False

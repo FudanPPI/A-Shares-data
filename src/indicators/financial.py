@@ -414,8 +414,13 @@ class FinancialIndicatorCalculator(BaseIndicatorCalculator):
             })
 
         df_inter = pd.DataFrame(intermediate_data)
-        self.db_ops.conn.execute("DELETE FROM financial_intermediate WHERE stock_code = ?", (stock_code,))
-        self.db_ops.insert_dataframe("financial_intermediate", df_inter, ["stock_code", "report_date", "report_type"])
+
+        # 事务保证: DELETE + INSERT 原子化
+        # 若无事务,DELETE 成功后 INSERT 失败会导致该股票所有财务指标丢失
+        with self.db_ops.transaction():
+            self.db_ops.conn.execute("DELETE FROM financial_intermediate WHERE stock_code = ?", (stock_code,))
+            self.db_ops.insert_dataframe("financial_intermediate", df_inter, ["stock_code", "report_date", "report_type"])
+
         logger.info(f"{stock_code} 财务指标完成")
 
     def _calc_q_data(self, df, i, qt, col):

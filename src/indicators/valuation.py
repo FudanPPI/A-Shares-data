@@ -136,6 +136,11 @@ class ValuationIndicatorCalculator(BaseIndicatorCalculator):
             })
 
         df_valuation = pd.DataFrame(valuation_data)
-        self.db_ops.conn.execute("DELETE FROM valuation_indicators WHERE stock_code = ?", (stock_code,))
-        self.db_ops.insert_dataframe("valuation_indicators", df_valuation, ["stock_code", "trade_date"])
+
+        # 事务保证: DELETE + INSERT 原子化
+        # 若无事务,DELETE 成功后 INSERT 失败会导致该股票所有估值指标丢失
+        with self.db_ops.transaction():
+            self.db_ops.conn.execute("DELETE FROM valuation_indicators WHERE stock_code = ?", (stock_code,))
+            self.db_ops.insert_dataframe("valuation_indicators", df_valuation, ["stock_code", "trade_date"])
+
         logger.info(f"{stock_code} 估值指标完成")
