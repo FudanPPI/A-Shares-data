@@ -163,7 +163,7 @@ class Scheduler:
         关键操作:
         1. 提交所有未提交事务(兜底)
         2. CHECKPOINT 将 WAL 刷入主文件
-        3. 关闭写连接释放文件锁
+        3. 关闭写连接 + 读连接池释放文件句柄
         4. 备份(独立连接做 CHECKPOINT)
         5. 重新打开连接做完整性校验
         """
@@ -172,13 +172,21 @@ class Scheduler:
         # 备份前关键操作:
         # 1. 提交所有未提交事务(虽然各采集器已自行提交,这里兜底)
         # 2. CHECKPOINT 将 WAL 刷入主文件,保证备份完整
-        # 3. 关闭写连接释放文件锁,避免备份时文件占用
+        # 3. 关闭写连接 + 读连接池释放文件句柄,避免备份时文件占用(WinError 32)
         try:
             self.db_ops.commit()  # 兜底提交,若已在事务外则是 no-op
         except Exception as e:
             logger.warning(f"备份前提交事务失败: {e}")
 
-        self.db_ops.close()  # 关闭写连接(读连接保持)
+        # CHECKPOINT 必须在关闭写连接前执行,否则 WAL 数据可能未刷入主文件
+        try:
+            self.db_ops.cm.checkpoint()
+        except Exception as e:
+            logger.warning(f"备份前 CHECKPOINT 失败: {e}")
+
+        # 关闭写连接 + 读连接池,彻底释放数据库文件句柄
+        self.db_ops.close()  # 关闭写连接
+        self.db_ops.cm.close_readers()  # 关闭所有读连接
         time.sleep(0.5)
 
         # 备份: create_backup 内部会执行 CHECKPOINT
@@ -188,7 +196,7 @@ class Scheduler:
         except Exception as e:
             logger.warning(f"数据库备份失败: {e}")
 
-        # 完整性校验(用读连接即可)
+        # 完整性校验(用读连接即可,acquire_reader 会自动重建连接)
         try:
             with self.db_ops.cm.acquire_reader() as conn:
                 self.backup_manager.check_integrity(conn)

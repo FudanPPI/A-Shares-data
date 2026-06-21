@@ -211,6 +211,22 @@ class ConnectionManager:
                 pass
             self._write_conn = None
 
+    def close_readers(self):
+        """关闭所有读连接(备份前调用,释放文件句柄)
+
+        DuckDB 读连接也会持有数据库文件句柄,导致 shutil.copy 失败(WinError 32)。
+        备份前必须关闭所有读连接,备份后由各线程按需重新建立。
+        """
+        with self._read_conns_lock:
+            for conn in self._read_conns:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._read_conns.clear()
+            # 清除 threading.local 中的缓存,下次 acquire_reader 会重建连接
+            self._read_local = threading.local()
+
     def __enter__(self):
         return self
 
