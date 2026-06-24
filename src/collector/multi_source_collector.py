@@ -42,6 +42,7 @@ class MultiSourceCollector(BaseCollector):
             # 财务数据: AKShare Sina (字段最全)
             ("财务数据", self._collect_financial),
             ("财务补充", self._collect_financial_supplement),
+            ("资产负债表补充", self._collect_balance_sheet),
 
             # 估值数据: 腾讯财经
             ("估值数据", self._collect_valuation),
@@ -52,6 +53,9 @@ class MultiSourceCollector(BaseCollector):
             # AKShare独有数据
             ("公告数据", self._collect_announcements),
             ("龙虎榜", self._collect_dragon_tiger),
+
+            # 北向资金: AKShare (仅沪深港通标的有数据)
+            ("北向资金", self._collect_northbound),
         ]
 
         for name, method in steps:
@@ -85,8 +89,12 @@ class MultiSourceCollector(BaseCollector):
         self.akshare.collect_financial_data(stock_code)
 
     def _collect_financial_supplement(self, stock_code: str):
-        """财务补充: AKShare东方财富EM"""
+        """财务补充: AKShare EM"""
         self.akshare._update_missing_financial_fields(stock_code)
+
+    def _collect_balance_sheet(self, stock_code: str):
+        """资产负债表补充: AKShare EM"""
+        self.akshare._update_balance_sheet_fields(stock_code)
 
     def _collect_valuation(self, stock_code: str):
         """估值数据: 腾讯财经"""
@@ -103,6 +111,10 @@ class MultiSourceCollector(BaseCollector):
     def _collect_dragon_tiger(self, stock_code: str):
         """龙虎榜: AKShare"""
         self.akshare.collect_dragon_tiger(stock_code)
+
+    def _collect_northbound(self, stock_code: str):
+        """北向资金: AKShare (仅沪深港通标的有数据)"""
+        self.akshare.collect_northbound_flow(stock_code)
 
     def close(self):
         """关闭所有数据源连接"""

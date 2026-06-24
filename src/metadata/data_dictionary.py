@@ -195,6 +195,10 @@ FINANCIAL_STATEMENTS = TableDef(
                  source=DataSource.AKSHARE_SINA, unit="元"),
         FieldDef("interest_expense", "利息支出", "财务费用中的利息支出(来自东方财富EM补充)", "DECIMAL(18,2)",
                  source=DataSource.AKSHARE_EM, unit="元"),
+        FieldDef("current_assets", "流动资产合计", "合并资产负债表流动资产合计(来自东方财富EM补充)", "DECIMAL(18,2)",
+                 source=DataSource.AKSHARE_EM, unit="元"),
+        FieldDef("current_liabilities", "流动负债合计", "合并资产负债表流动负债合计(来自东方财富EM补充)", "DECIMAL(18,2)",
+                 source=DataSource.AKSHARE_EM, unit="元"),
     ]
 )
 
@@ -763,6 +767,12 @@ FINANCIAL_INTERMEDIATE = TableDef(
         FieldDef("cash_interest_coverage_ttm", "现金流利息覆盖(TTM)", "经营现金流 / 利息支出(TTM)", "DECIMAL(18,4)",
                  source=DataSource.CALCULATED, category=DataCategory.DERIVED_FINANCIAL,
                  calculation="operating_cash_flow_ttm / interest_expense_ttm", unit="倍"),
+        FieldDef("current_ratio", "流动比率", "流动资产 / 流动负债", "DECIMAL(10,4)",
+                 source=DataSource.CALCULATED, category=DataCategory.DERIVED_FINANCIAL,
+                 calculation="current_assets / current_liabilities", unit="倍"),
+        FieldDef("quick_ratio", "速动比率", "(流动资产 - 存货) / 流动负债", "DECIMAL(10,4)",
+                 source=DataSource.CALCULATED, category=DataCategory.DERIVED_FINANCIAL,
+                 calculation="(current_assets - inventory) / current_liabilities", unit="倍"),
     ]
 )
 

@@ -13,7 +13,8 @@ class FinancialIndicatorCalculator(BaseIndicatorCalculator):
         df_finance = self.db_ops.query("""
             SELECT report_date, report_type, total_revenue, net_profit, total_assets, total_liabilities, 
                    eps, equity_parent, announcement_date, operating_cost, net_profit_deducted, 
-                   inventory, accounts_receivable, accounts_payable, capex, interest_expense, operating_cash_flow
+                   inventory, accounts_receivable, accounts_payable, capex, interest_expense, operating_cash_flow,
+                   current_assets, current_liabilities
             FROM financial_statements 
             WHERE stock_code = ? 
             ORDER BY report_date
@@ -100,6 +101,8 @@ class FinancialIndicatorCalculator(BaseIndicatorCalculator):
             capex = self._safe_float(row.get('capex'))
             interest_expense = self._safe_float(row.get('interest_expense'))
             operating_cash_flow = self._safe_float(row.get('operating_cash_flow'))
+            current_assets = self._safe_float(row.get('current_assets'))
+            current_liabilities = self._safe_float(row.get('current_liabilities'))
 
             equity = None
             equity_to_use = None
@@ -321,6 +324,15 @@ class FinancialIndicatorCalculator(BaseIndicatorCalculator):
             if interest_expense_ttm is not None and interest_expense_ttm != 0 and operating_cash_flow_ttm is not None:
                 cash_interest_coverage_ttm = round(operating_cash_flow_ttm / interest_expense_ttm, 4)
 
+            # 流动比率 = 流动资产 / 流动负债
+            # 速动比率 = (流动资产 - 存货) / 流动负债
+            current_ratio = None
+            quick_ratio = None
+            if current_assets is not None and current_liabilities is not None and current_liabilities != 0:
+                current_ratio = round(current_assets / current_liabilities, 4)
+                quick_assets = current_assets - (inventory if inventory is not None else 0)
+                quick_ratio = round(quick_assets / current_liabilities, 4)
+
             intermediate_data.append({
                 'stock_code': stock_code,
                 'report_date': report_date,
@@ -411,6 +423,8 @@ class FinancialIndicatorCalculator(BaseIndicatorCalculator):
                 'fcf_ttm': fcf_ttm,
                 'fcf_profit_coverage_ttm': fcf_profit_coverage_ttm,
                 'cash_interest_coverage_ttm': cash_interest_coverage_ttm,
+                'current_ratio': current_ratio,
+                'quick_ratio': quick_ratio,
             })
 
         df_inter = pd.DataFrame(intermediate_data)

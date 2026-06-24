@@ -32,9 +32,11 @@ class EastmoneyCollector(BaseCollector):
         steps = [
             ("财务数据", self.collect_financial_data),
             ("财务字段补充", self._update_missing_financial_fields),
+            ("资产负债表补充", self._update_balance_sheet_fields),
             ("融资融券", self.collect_margin_trading),
             ("公告数据", self.collect_announcements),
             ("龙虎榜", self.collect_dragon_tiger),
+            ("北向资金", self.collect_northbound_flow),
         ]
         for name, method in steps:
             try:
@@ -226,6 +228,53 @@ class EastmoneyCollector(BaseCollector):
         """)
         conn.unregister("df")
 
+    def _update_balance_sheet_fields(self, stock_code: str):
+        """通过东方财富EM资产负债表补充流动资产/流动负债字段
+
+        数据源: ak.stock_balance_sheet_by_report_em
+        补充字段: current_assets(TOTAL_CURRENT_ASSETS), current_liabilities(TOTAL_CURRENT_LIAB)
+        """
+        from .rate_limiter import akshare_rate_limited
+
+        @akshare_rate_limited
+        def _fetch(code):
+            return ak.stock_balance_sheet_by_report_em(symbol=code)
+
+        try:
+            if stock_code.startswith('sh'):
+                em_code = 'SH' + stock_code[2:]
+            else:
+                em_code = 'SZ' + stock_code[2:]
+
+            df = _fetch(em_code)
+            if df is None or df.empty:
+                logger.info(f"[akshare] {stock_code} 无资产负债表数据")
+                return
+
+            df['report_date'] = pd.to_datetime(df['REPORT_DATE']).dt.date
+
+            # 事务保证: 流动资产/负债批量 UPDATE 原子化
+            with self.db_ops.transaction():
+                for _, row in df.iterrows():
+                    rd = row['report_date']
+                    current_assets = row.get('TOTAL_CURRENT_ASSETS')
+                    current_liab = row.get('TOTAL_CURRENT_LIAB')
+
+                    if pd.notna(current_assets) or pd.notna(current_liab):
+                        self.db_ops.conn.execute("""
+                            UPDATE financial_statements
+                            SET current_assets = ?,
+                                current_liabilities = ?
+                            WHERE stock_code = ? AND report_date = ?
+                        """, [
+                            float(current_assets) if pd.notna(current_assets) else None,
+                            float(current_liab) if pd.notna(current_liab) else None,
+                            stock_code, rd
+                        ])
+            logger.info(f"[akshare] {stock_code} 资产负债表字段补充完成")
+        except Exception as e:
+            logger.error(f"[akshare] {stock_code} 资产负债表字段补充失败: {e}")
+
     def collect_margin_trading(self, stock_code: str):
         """通过AKShare采集融资融券数据(BaoStock无此API)"""
         try:
@@ -405,6 +454,88 @@ class EastmoneyCollector(BaseCollector):
             return result
         except (ValueError, TypeError):
             return None
+
+    def collect_northbound_flow(self, stock_code: str):
+        """采集北向资金数据(使用 stock_hsgt_individual_em 接口)
+
+        注意: 仅沪深港通标的股票有数据,非标的股票(如部分中小盘)会静默跳过
+        """
+        from .rate_limiter import akshare_rate_limited
+
+        @akshare_rate_limited
+        def _fetch(code):
+            return ak.stock_hsgt_individual_em(symbol=code)
+
+        try:
+            code = stock_code[2:]
+            df = _fetch(code)
+
+            if df is None or df.empty:
+                logger.info(f"[akshare] {stock_code} 无北向资金数据(可能非沪深港通标的)")
+                return
+
+            # 字段映射
+            df = df.rename(columns={
+                "持股日期": "trade_date",
+                "持股数量": "holding_shares",
+                "持股市值": "holding_value",
+                "持股数量占A股百分比": "holding_ratio",
+                "今日增持资金": "net_inflow",
+            })
+
+            df["stock_code"] = stock_code
+            df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+
+            # 按日期排序计算累计净流入
+            df = df.sort_values("trade_date").reset_index(drop=True)
+            if "net_inflow" in df.columns:
+                df["net_inflow"] = pd.to_numeric(df["net_inflow"], errors="coerce").fillna(0.0)
+                df["inflow_5d"] = df["net_inflow"].rolling(5, min_periods=1).sum()
+                df["inflow_10d"] = df["net_inflow"].rolling(10, min_periods=1).sum()
+                df["inflow_30d"] = df["net_inflow"].rolling(30, min_periods=1).sum()
+            else:
+                df["inflow_5d"] = None
+                df["inflow_10d"] = None
+                df["inflow_30d"] = None
+
+            # 选取目标列
+            cols = ["stock_code", "trade_date", "net_inflow", "holding_shares",
+                    "holding_value", "holding_ratio", "inflow_5d", "inflow_10d", "inflow_30d"]
+            df = df[[c for c in cols if c in df.columns]].copy()
+
+            today_fmt = datetime.now().strftime("%Y-%m-%d")
+            try:
+                with self.db_ops.transaction():
+                    self.db_ops.conn.register("df_nb", df)
+                    self.db_ops.conn.execute("""
+                        INSERT INTO northbound_flow
+                        (stock_code, trade_date, net_inflow, holding_shares, holding_value,
+                         holding_ratio, inflow_5d, inflow_10d, inflow_30d)
+                        SELECT stock_code, trade_date, net_inflow, holding_shares, holding_value,
+                               holding_ratio, inflow_5d, inflow_10d, inflow_30d
+                        FROM df_nb
+                        ON CONFLICT (stock_code, trade_date) DO UPDATE SET
+                            net_inflow = EXCLUDED.net_inflow,
+                            holding_shares = EXCLUDED.holding_shares,
+                            holding_value = EXCLUDED.holding_value,
+                            holding_ratio = EXCLUDED.holding_ratio,
+                            inflow_5d = EXCLUDED.inflow_5d,
+                            inflow_10d = EXCLUDED.inflow_10d,
+                            inflow_30d = EXCLUDED.inflow_30d
+                    """)
+                    self.db_ops.conn.unregister("df_nb")
+                    self.db_ops.update_last_update_date(stock_code, "northbound", today_fmt)
+                logger.info(f"[akshare] {stock_code} 北向资金完成,新增 {len(df)} 条")
+            except Exception as e:
+                logger.error(f"[akshare] {stock_code} 北向资金写入失败,已回滚: {e}")
+                raise
+        except Exception as e:
+            # 非沪深港通标的会返回 None,属于正常情况,降级为 info
+            msg = str(e)
+            if "NoneType" in msg or "non-subscriptable" in msg:
+                logger.info(f"[akshare] {stock_code} 非沪深港通标的,无北向资金数据")
+            else:
+                logger.warning(f"[akshare] {stock_code} 北向资金采集失败: {e}")
 
     def _init_column_metadata(self):
         conn = self.db_ops.conn

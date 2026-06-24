@@ -271,7 +271,10 @@ def get_northbound(
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
 
-        return {"stock_code": stock_code, "count": len(rows), "data": _rows_to_dicts(rows, columns)}
+        resp = {"stock_code": stock_code, "count": len(rows), "data": _rows_to_dicts(rows, columns)}
+        if len(rows) == 0:
+            resp["note"] = "该股票可能非沪深港通标的,无北向资金数据"
+        return resp
     finally:
         conn.close()
 

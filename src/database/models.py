@@ -55,6 +55,8 @@ def init_tables(conn):
         accounts_payable DECIMAL(18,2),
         capex DECIMAL(18,2),
         interest_expense DECIMAL(18,2),
+        current_assets DECIMAL(18,2),
+        current_liabilities DECIMAL(18,2),
         PRIMARY KEY (stock_code, report_date, report_type)
     )
     """)
@@ -258,6 +260,8 @@ def init_tables(conn):
         fcf_ttm DECIMAL(18,2),
         fcf_profit_coverage_ttm DECIMAL(18,4),
         cash_interest_coverage_ttm DECIMAL(18,4),
+        current_ratio DECIMAL(10,4),
+        quick_ratio DECIMAL(10,4),
         PRIMARY KEY (stock_code, report_date, report_type)
     )
     """)

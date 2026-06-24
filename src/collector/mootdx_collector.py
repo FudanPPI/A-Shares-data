@@ -70,6 +70,31 @@ class MootdxCollector(BaseCollector):
                 pass
             _client_local.client = None
 
+    def _fill_turnover_and_shares(self, df: pd.DataFrame, stock_code: str):
+        """填充流通股本(outstanding_share)和换手率(turnover)
+
+        用总股本近似流通股本(A股已基本全流通,误差通常<5%)
+        换手率 = 成交量 / 流通股本 * 100
+        """
+        try:
+            row = self.db_ops.conn.execute(
+                "SELECT total_shares FROM stock_capital "
+                "WHERE stock_code = ? ORDER BY record_date DESC LIMIT 1",
+                [stock_code]
+            ).fetchone()
+            if row and row[0] and row[0] > 0:
+                shares = int(row[0])
+                df["outstanding_share"] = shares
+                df["turnover"] = (df["volume"].astype(float) / shares * 100).round(6)
+            else:
+                df["outstanding_share"] = None
+                df["turnover"] = None
+                logger.debug(f"[mootdx] {stock_code} 无股本数据,turnover/outstanding_share 置空")
+        except Exception as e:
+            df["outstanding_share"] = None
+            df["turnover"] = None
+            logger.debug(f"[mootdx] {stock_code} 填充换手率失败: {e}")
+
     def collect_stock(self, stock_code: str):
         steps = [
             ("日线数据(mootdx)", self.collect_daily_data),
@@ -133,6 +158,9 @@ class MootdxCollector(BaseCollector):
         # 去重
         df = df.loc[:, ~df.columns.duplicated(keep='last')]
 
+        # 填充流通股本和换手率(用总股本近似流通股本,A股已基本全流通)
+        self._fill_turnover_and_shares(df, stock_code)
+
         today_fmt = datetime.now().strftime("%Y-%m-%d")
         # 事务保证: 数据写入 + 水位更新 原子化
         # Parquet 写入非事务性,但已有去重逻辑兜底,失败重跑会覆盖
@@ -187,6 +215,9 @@ class MootdxCollector(BaseCollector):
             df = df.loc[:, ~df.columns.duplicated(keep='last')]
             df["stock_code"] = stock_code
             df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+
+            # 填充流通股本和换手率
+            self._fill_turnover_and_shares(df, stock_code)
 
             today_fmt = datetime.now().strftime("%Y-%m-%d")
             # 事务保证: 数据写入 + 水位更新 原子化
