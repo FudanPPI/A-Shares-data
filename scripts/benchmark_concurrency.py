@@ -44,7 +44,7 @@ config.PARQUET_DATA_TYPES = {
 for d in [config.PARQUET_DIR, config.BACKUP_DIR, *config.PARQUET_DATA_TYPES.values()]:
     d.mkdir(parents=True, exist_ok=True)
 
-from src.config import STOCK_CODES, START_DATE
+from src.config import STOCK_CODES, START_DATE, TUSHARE_TOKEN
 from src.database.operations import DatabaseOperations
 from src.database.models import init_tables
 from src.database.parquet_store import ParquetStore
@@ -67,7 +67,7 @@ def _cleanup():
 
 def collect_one_stock(db_ops, parquet_store, stock_code: str):
     """采集单只股票(供串行和并发模式共用)"""
-    collector = MultiSourceCollector(db_ops, parquet_store, START_DATE)
+    collector = MultiSourceCollector(db_ops, parquet_store, START_DATE, TUSHARE_TOKEN)
     collector.collect_stock(stock_code)
 
 

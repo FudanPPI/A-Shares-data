@@ -5,7 +5,7 @@
 - 股本/行业/分红 -> baostock_collector (更稳定)
 - 估值PE/PB -> tencent_collector (零鉴权)
 - 融资融券 -> AKShare (BaoStock无此API)
-- 北向资金 -> 已失效, 暂不可用
+- 北向资金 -> AKShare (stock_hsgt_individual_em接口可用,但数据停更至2024年8月)
 
 本模块负责:
 - 财务数据 (AKShare Sina三大报表, 字段最全)

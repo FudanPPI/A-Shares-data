@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from src.config import DB_PATH, PARQUET_DIR, BACKUP_DIR, START_DATE, STOCK_CODES
+from src.config import DB_PATH, PARQUET_DIR, BACKUP_DIR, START_DATE, STOCK_CODES, TUSHARE_TOKEN
 from src.database.models import init_tables
 from src.database.operations import DatabaseOperations
 from src.database.parquet_store import ParquetStore
@@ -91,7 +91,7 @@ class Scheduler:
         # 由于 MultiSourceCollector 内部持有 mootdx/baostock/tencent/akshare 采集器
         # 而这些采集器现在都是线程安全的(threading.local / 全局锁 / 无状态)
         # 所以可以共享同一个 collector 实例
-        collector = MultiSourceCollector(self.db_ops, self.parquet_store, START_DATE)
+        collector = MultiSourceCollector(self.db_ops, self.parquet_store, START_DATE, TUSHARE_TOKEN)
 
         with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="collector") as executor:
             futures = {

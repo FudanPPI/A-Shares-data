@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, '.')
 
 from pathlib import Path
-from src.config import DB_PATH, PARQUET_DIR
+from src.config import DB_PATH, PARQUET_DIR, TUSHARE_TOKEN
 from src.database.models import init_tables
 from src.database.operations import DatabaseOperations
 from src.database.parquet_store import ParquetStore
@@ -22,7 +22,7 @@ parquet_store = ParquetStore(PARQUET_DIR)
 init_tables(db_ops.conn)
 
 stock_code = "sh600519"
-collector = MultiSourceCollector(db_ops, parquet_store, "20250501")
+collector = MultiSourceCollector(db_ops, parquet_store, "20250501", TUSHARE_TOKEN)
 
 print("=" * 60)
 print("多数据源架构测试 - 茅台(sh600519)")

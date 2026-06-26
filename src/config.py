@@ -39,5 +39,7 @@ PARQUET_DATA_TYPES = {
 
 BACKUP_RETENTION_DAYS = 30
 
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
+
 for d in [DATA_DIR, LOG_DIR, SCRIPTS_DIR, BACKUP_DIR, *PARQUET_DATA_TYPES.values()]:
     d.mkdir(parents=True, exist_ok=True)
