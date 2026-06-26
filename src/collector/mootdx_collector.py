@@ -24,41 +24,60 @@ class MootdxCollector(BaseCollector):
         super().__init__(db_ops, parquet_store, start_date)
         # 不再持有单例 _client,改用 threading.local
 
-    # 通达信常用标准服务器
+    # 通达信最新可用服务器列表(2025年更新)
+    # 来源: 申银万国、国金证券、华西证券等券商公开地址
     DEFAULT_SERVERS = [
-        ('119.147.212.81', 7709),
-        ('112.74.214.43', 7727),
-        ('221.231.141.60', 7709),
+        ('222.73.235.23', 7709),    # 申银万国上海电信1
+        ('222.73.235.29', 7709),    # 申银万国上海电信2
+        ('125.64.39.61', 7709),     # 申银万国成都电信1
+        ('222.73.56.72', 7709),     # 国金上海电信
+        ('119.4.167.141', 7709),    # 华西联通L1
+        ('121.36.199.182', 7711),   # 上海双线资讯主站(新)
+        ('124.70.158.189', 7711),   # 上海双线资讯主站2(新)
+        ('119.147.212.81', 7709),   # 旧地址备用
     ]
 
     def _get_client(self):
-        """获取当前线程的 mootdx client(threading.local 保证线程独立)"""
+        """获取当前线程的 mootdx client(threading.local 保证线程独立)
+
+        连接策略:
+        1. 先尝试 bestip=True 让 mootdx 自动选优最快的可用服务器
+        2. 失败后逐个尝试预设服务器列表(DEFAULT_SERVERS)
+        3. 全部失败则抛出 ConnectionError 触发回退到 AKShare
+        """
         client = getattr(_client_local, "client", None)
         if client is None:
             from mootdx.quotes import Quotes
+
+            # 策略1: 尝试 bestip=True 自动选优
             try:
-                # bestip=False避免写入config.json导致权限问题
-                client = Quotes.factory(market='std', timeout=15, bestip=False)
-                # 测试连接
+                logger.debug(f"[mootdx] 线程 {threading.get_ident()} 尝试 bestip=True 自动选优")
+                client = Quotes.factory(market='std', timeout=30, bestip=True)
                 test = client.bars(symbol='000001', frequency=4, start=0, offset=1)
-                if test is None or test.empty:
-                    raise ConnectionError("默认服务器连接失败")
-            except Exception:
-                # 逐个尝试预设服务器
-                for host, port in self.DEFAULT_SERVERS:
-                    try:
-                        client = Quotes.factory(market='std', timeout=15,
-                                                bestip=False, ip=host, port=port)
-                        test = client.bars(symbol='000001', frequency=4, start=0, offset=1)
-                        if test is not None and not test.empty:
-                            logger.info(f"[mootdx] 线程 {threading.get_ident()} 连接服务器成功: {host}:{port}")
-                            break
-                    except Exception:
-                        continue
-                else:
-                    logger.warning("[mootdx] 所有服务器连接失败, 将回退到AKShare")
-            _client_local.client = client
-        return client
+                if test is not None and not test.empty:
+                    logger.info(f"[mootdx] 线程 {threading.get_ident()} bestip=True 自动选优成功")
+                    _client_local.client = client
+                    return client
+            except Exception as e:
+                logger.debug(f"[mootdx] bestip=True 失败: {e}, 尝试预设服务器列表")
+
+            # 策略2: 逐个尝试预设服务器列表
+            for host, port in self.DEFAULT_SERVERS:
+                try:
+                    client = Quotes.factory(market='std', timeout=30,
+                                            bestip=False, ip=host, port=port)
+                    test = client.bars(symbol='000001', frequency=4, start=0, offset=1)
+                    if test is not None and not test.empty:
+                        logger.info(f"[mootdx] 线程 {threading.get_ident()} 连接服务器成功: {host}:{port}")
+                        _client_local.client = client
+                        return client
+                except Exception as e:
+                    logger.debug(f"[mootdx] {host}:{port} 连接失败: {e}")
+                    continue
+
+            # 全部失败
+            logger.warning("[mootdx] 所有服务器连接失败, 将回退到AKShare")
+            raise ConnectionError("所有服务器连接失败")
 
     def close(self):
         """关闭当前线程的 mootdx client"""
@@ -119,6 +138,10 @@ class MootdxCollector(BaseCollector):
 
         code = stock_code[2:]
         client = self._get_client()
+
+        if client is None:
+            logger.warning(f"[mootdx] {stock_code} 客户端初始化失败, 直接回退到AKShare")
+            return self._fallback_akshare(stock_code)
 
         # mootdx frequency: 4=日线, 5=周线, 6=月线
         # offset=0 表示最新数据, 需要计算需要多少条
